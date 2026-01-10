@@ -1,0 +1,36 @@
+services:
+  # DB
+  db:
+    image: postgres:15
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=urlshortener
+    ports:
+      - "5432:5432"
+
+  # Redis
+  cache:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  # FastAPI
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    environment:
+      - salt=${salt}
+      - DATABASE_URL=postgresql://postgres:password@db:5432/urlshortener
+      - REDIS_URL=redis://cache:6379
+    depends_on:
+      - db
+      - cache
+
+volumes:
+  postgres_data:
