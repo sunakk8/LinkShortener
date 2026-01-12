@@ -13,5 +13,4 @@ def read_root():
 
 @app.get("/health")
 def health_check():
-    # In a real app, this would also check if the DB and Redis are reachable
     return {"status": "healthy"}
