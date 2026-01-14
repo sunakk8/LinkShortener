@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from . import models, utils, database, schemas
+from .redis_client import redis_conn
 import os
 
 app = FastAPI(title="URL Shortener")
@@ -39,10 +40,18 @@ def create_short_url(url_request: schemas.URLCreate, db: Session = Depends(datab
 
 @app.get("/{short_code}")
 def redirect(short_code: str, db: Session = Depends(database.get_db)):
-    # query db for url
+    # check redis cache first
+    cached_url = redis_conn.get(short_code)
+    if cached_url:
+        return RedirectResponse(url=cached_url)
+    
+    # miss, query db for url
     db_url = db.query(models.URL).filter(models.URL.short_code == short_code).first()
     if db_url is None:
         raise HTTPException(status_code=404, detail="URL not found")
+    
+    # cache for future, 24 hr exp
+    redis_conn.setex(short_code, 86400, db_url.target_url)
     
     # update metrics
     db_url.clicks += 1
