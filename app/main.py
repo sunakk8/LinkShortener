@@ -1,8 +1,9 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from . import models, utils, database, schemas
 from .redis_client import redis_conn
+from .sync import sync_clicks_to_db
 import os
 
 app = FastAPI(title="URL Shortener")
@@ -42,6 +43,9 @@ def create_short_url(url_request: schemas.URLCreate, db: Session = Depends(datab
 def redirect(short_code: str, db: Session = Depends(database.get_db)):
     # check redis cache first
     cached_url = redis_conn.get(short_code)
+
+    # update metrics
+    redis_conn.incr(f"clicks:{short_code}")
     if cached_url:
         return RedirectResponse(url=cached_url)
     
@@ -52,12 +56,14 @@ def redirect(short_code: str, db: Session = Depends(database.get_db)):
     
     # cache for future, 24 hr exp
     redis_conn.setex(short_code, 86400, db_url.target_url)
-    
-    # update metrics
-    db_url.clicks += 1
-    db.commit()
 
     return RedirectResponse(url=db_url.target_url)
+
+@app.post("/sync", status_code=202)
+def trigger_sync(background_tasks: BackgroundTasks, db: Session = Depends(database.get_db)):
+    background_tasks.add_task(sync_clicks_to_db, db)
+    return {"message": "Sync started in background"}
+
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
