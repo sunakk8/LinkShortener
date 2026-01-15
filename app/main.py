@@ -21,17 +21,29 @@ def read_root():
 
 @app.post("/shorten", response_model=schemas.URLResponse)
 def create_short_url(url_request: schemas.URLCreate, db: Session = Depends(database.get_db)):
-    # add new url, get db id
-    new_record = models.URL(target_url=url_request.target_url.unicode_string())
-    db.add(new_record)
-    db.commit()
-    db.refresh(new_record)
+    # check for custom url
+    if url_request.custom_url:
+        existing = db.query(models.URL).filter(models.URL.short_code == url_request.custom_url).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="This URL is already taken. Please try another.")
+        
+        new_record = models.URL(target_url=url_request.target_url.unicode_string(), 
+                                short_code=url_request.custom_url)
+        db.add(new_record)
+        db.commit()
+        db.refresh(new_record)
+    else:
+        # add new url, get db id
+        new_record = models.URL(target_url=url_request.target_url.unicode_string())
+        db.add(new_record)
+        db.commit()
+        db.refresh(new_record)
 
-    # encode db id, update db record
-    short_code = utils.encode_id(new_record.id)
-    new_record.short_code = short_code
-    db.commit()
-    db.refresh(new_record)
+        # encode db id, update db record
+        short_code = utils.encode_id(new_record.id)
+        new_record.short_code = short_code
+        db.commit()
+        db.refresh(new_record)
 
     # return full short URL
     return schemas.URLResponse(
