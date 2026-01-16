@@ -3,6 +3,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from . import models, utils, database, schemas
 from .redis_client import redis_conn
+from .limiter import rate_limiter
 from .sync import sync_clicks_to_db
 import os
 
@@ -19,7 +20,7 @@ def read_root():
         "salt_check": "Salt is set" if os.getenv("salt") else "Salt is missing"
     }
 
-@app.post("/shorten", response_model=schemas.URLResponse)
+@app.post("/shorten", response_model=schemas.URLResponse, dependencies=[Depends(rate_limiter)])
 def create_short_url(url_request: schemas.URLCreate, db: Session = Depends(database.get_db)):
     # check for custom url
     if url_request.custom_url:
