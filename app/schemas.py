@@ -9,6 +9,7 @@ class URLCreate(BaseModel):
         max_length=20,
         pattern="^[a-zA-Z0-9_-]+$"
     )
+    expiry_days: Optional[int] = None
 
 class URLResponse(BaseModel):
     short_url: str

@@ -5,6 +5,8 @@ from . import models, utils, database, schemas
 from .redis_client import redis_conn
 from .limiter import rate_limiter
 from .sync import sync_clicks_to_db
+from datetime import datetime, timedelta
+import json
 import os
 
 app = FastAPI(title="URL Shortener")
@@ -22,29 +24,32 @@ def read_root():
 
 @app.post("/shorten", response_model=schemas.URLResponse, dependencies=[Depends(rate_limiter)])
 def create_short_url(url_request: schemas.URLCreate, db: Session = Depends(database.get_db)):
+    
+    new_record = models.URL(target_url=url_request.target_url.unicode_string())
+    expires_at = None
+    if url_request.expiry_days:
+        expires_at = datetime.utcnow() + timedelta(days=url_request.expiry_days)
+    new_record.expires_at = expires_at
+
     # check for custom url
     if url_request.custom_url:
         existing = db.query(models.URL).filter(models.URL.short_code == url_request.custom_url).first()
         if existing:
             raise HTTPException(status_code=400, detail="This URL is already taken. Please try another.")
         
-        new_record = models.URL(target_url=url_request.target_url.unicode_string(), 
-                                short_code=url_request.custom_url)
+        new_record.short_code=url_request.custom_url
         db.add(new_record)
-        db.commit()
-        db.refresh(new_record)
+        
     else:
         # add new url, get db id
-        new_record = models.URL(target_url=url_request.target_url.unicode_string())
         db.add(new_record)
         db.commit()
         db.refresh(new_record)
 
         # encode db id, update db record
-        short_code = utils.encode_id(new_record.id)
-        new_record.short_code = short_code
-        db.commit()
-        db.refresh(new_record)
+        new_record.short_code = utils.encode_id(new_record.id)
+    db.commit()
+    db.refresh(new_record)
 
     # return full short URL
     return schemas.URLResponse(
@@ -54,23 +59,44 @@ def create_short_url(url_request: schemas.URLCreate, db: Session = Depends(datab
 
 @app.get("/{short_code}")
 def redirect(short_code: str, db: Session = Depends(database.get_db)):
-    # check redis cache first
-    cached_url = redis_conn.get(short_code)
+    # check Redis first
+    cached_data = redis_conn.get(f"url:{short_code}")
+    
+    if cached_data:
+        data = json.loads(cached_data)
+        target_url = data["target_url"]
+        expires_at_str = data["expires_at"]
+        
+        # Check expiration
+        if expires_at_str:
+            expires_at = datetime.fromisoformat(expires_at_str)
+            if expires_at < datetime.utcnow():
+                raise HTTPException(status_code=410, detail="Sorry, the URL has expired.")
+    
+    # miss, check db
+    else:
+        db_url = db.query(models.URL).filter(models.URL.short_code == short_code).first()
+        
+        if not db_url:
+            raise HTTPException(status_code=404, detail="Link not found")
 
-    # update metrics
+        # Check expiration
+        if db_url.expires_at and db_url.expires_at < datetime.utcnow():
+            raise HTTPException(status_code=410, detail="Link expired")
+        
+        target_url = db_url.target_url
+        
+        # Update Redis
+        cache_payload = {
+            "target_url": target_url,
+            "expires_at": db_url.expires_at.isoformat() if db_url.expires_at else None
+        }
+        redis_conn.setex(f"url:{short_code}", 86400, json.dumps(cache_payload))
+
+    # Increment click counter in Redis
     redis_conn.incr(f"clicks:{short_code}")
-    if cached_url:
-        return RedirectResponse(url=cached_url)
-    
-    # miss, query db for url
-    db_url = db.query(models.URL).filter(models.URL.short_code == short_code).first()
-    if db_url is None:
-        raise HTTPException(status_code=404, detail="URL not found")
-    
-    # cache for future, 24 hr exp
-    redis_conn.setex(short_code, 86400, db_url.target_url)
 
-    return RedirectResponse(url=db_url.target_url)
+    return RedirectResponse(url=target_url)
 
 @app.post("/sync", status_code=202)
 def trigger_sync(background_tasks: BackgroundTasks, db: Session = Depends(database.get_db)):
