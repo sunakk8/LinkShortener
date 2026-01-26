@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request, Form
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -26,34 +26,39 @@ models.Base.metadata.create_all(bind=database.engine)
 def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
+from fastapi import Form
+
+@app.post("/shorten-ui", dependencies=[Depends(rate_limiter)])
+def ui_shorten(
+    request: Request,
+    target_url: str = Form(...),
+    custom_url: str = Form(None),
+    expiry_days: int = Form(None),
+    db: Session = Depends(database.get_db)
+):
+    try:
+        data = schemas.URLCreate(
+            target_url=target_url, 
+            custom_url=custom_url, 
+            expiry_days=expiry_days
+        )
+        new_record = perform_shortening_logic(data, db)
+        
+        return templates.TemplateResponse("index.html", {
+            "request": request,
+            "short_url": f"http://localhost:8000/{new_record.short_code}"
+        })
+    except HTTPException as e:
+        return templates.TemplateResponse("index.html", {
+            "request": request,
+            "error_message": e.detail
+        })
+
+
 @app.post("/shorten", response_model=schemas.URLResponse, dependencies=[Depends(rate_limiter)])
 def create_short_url(url_request: schemas.URLCreate, db: Session = Depends(database.get_db)):
     
-    new_record = models.URL(target_url=url_request.target_url.unicode_string())
-    expires_at = None
-    if url_request.expiry_days:
-        expires_at = datetime.utcnow() + timedelta(days=url_request.expiry_days)
-    new_record.expires_at = expires_at
-
-    # check for custom url
-    if url_request.custom_url:
-        existing = db.query(models.URL).filter(models.URL.short_code == url_request.custom_url).first()
-        if existing:
-            raise HTTPException(status_code=400, detail="This URL is already taken. Please try another.")
-        
-        new_record.short_code=url_request.custom_url
-        db.add(new_record)
-        
-    else:
-        # add new url, get db id
-        db.add(new_record)
-        db.commit()
-        db.refresh(new_record)
-
-        # encode db id, update db record
-        new_record.short_code = utils.encode_id(new_record.id)
-    db.commit()
-    db.refresh(new_record)
+    new_record = perform_shortening_logic(url_request, db)
 
     # return full short URL
     return schemas.URLResponse(
@@ -110,3 +115,32 @@ def trigger_sync(background_tasks: BackgroundTasks, db: Session = Depends(databa
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
+
+
+def perform_shortening_logic(url_request: schemas.URLCreate, db: Session):
+    new_record = models.URL(target_url=url_request.target_url.unicode_string())
+    expires_at = None
+    if url_request.expiry_days:
+        expires_at = datetime.utcnow() + timedelta(days=url_request.expiry_days)
+    new_record.expires_at = expires_at
+
+    # check for custom url
+    if url_request.custom_url:
+        existing = db.query(models.URL).filter(models.URL.short_code == url_request.custom_url).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="This URL is already taken. Please try another.")
+        
+        new_record.short_code=url_request.custom_url
+        db.add(new_record)
+        
+    else:
+        # add new url, get db id
+        db.add(new_record)
+        db.commit()
+        db.refresh(new_record)
+
+        # encode db id, update db record
+        new_record.short_code = utils.encode_id(new_record.id)
+    db.commit()
+    db.refresh(new_record)
+    return new_record
