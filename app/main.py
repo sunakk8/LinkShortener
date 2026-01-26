@@ -1,5 +1,7 @@
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from . import models, utils, database, schemas
 from .redis_client import redis_conn
@@ -9,18 +11,20 @@ from datetime import datetime, timedelta
 import json
 import os
 
+
 app = FastAPI(title="URL Shortener")
+
+# Setup templates and static files
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+templates = Jinja2Templates(directory="app/templates")
 
 # Initialize the database tables
 models.Base.metadata.create_all(bind=database.engine)
 
 
 @app.get("/")
-def read_root():
-    return {
-        "message": "URL Shortener API is live",
-        "salt_check": "Salt is set" if os.getenv("salt") else "Salt is missing"
-    }
+def home(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/shorten", response_model=schemas.URLResponse, dependencies=[Depends(rate_limiter)])
 def create_short_url(url_request: schemas.URLCreate, db: Session = Depends(database.get_db)):
